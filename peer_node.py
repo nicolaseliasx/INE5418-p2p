@@ -6,7 +6,7 @@ import os
 
 class Peer_Node:
     @staticmethod
-    def peer_node(node_id, config, topology):
+    def peer_node(node_id, config, topology, all_total_chunks):
         """
         Função que roda cada peer. Abre os sockets UDP e TCP e escuta por requisições.
         :param node_id: ID do nodo.
@@ -29,70 +29,78 @@ class Peer_Node:
         tcp_socket.listen(5)
         print(f"Peer {node_id} ouvindo requisições TCP para transferência de chunks na porta {tcp_port}")
 
+        received_chunks = 0 # Contador para acompanhar o número de chunks recebidos
+        all_total_chunks = all_total_chunks # Dicionário com o total de chunks para cada arquivo
+
+
+        visited_messages = set()  # Conjunto para armazenar mensagens já visitadas
+
         def receive_flooding():
             while True:
                 try:
-                    data, addr = udp_socket.recvfrom(1024)  # Buffer de 1024 bytes
-                    message = json.loads(data.decode())  # Converte de volta para dict
+                    data, addr = udp_socket.recvfrom(1024)
+                    message = json.loads(data.decode())
                     print(f"Peer {node_id} recebeu mensagem UDP de {addr}: {message}")
                     
+                    message_id = f"{message['file_name']}-{message['tcp_port']}"
+                    
+                    if message_id in visited_messages:
+                        print(f"Mensagem '{message_id}' já processada. Ignorando.")
+                        continue
+
+                    visited_messages.add(message_id)
+
                     if message['type'] == 'search':
-                        # Continua com o flooding
                         file_name = message['file_name']
+                        if node_id == 0:
+                            print(f"PEER 0 TEM O ARQUIVO? {os.path.exists(f"{node_id}/{file_name}")}")
                         if os.path.exists(f"{node_id}/{file_name}"):
                             print(f"Peer {node_id} tem o arquivo '{file_name}', notificando o peer solicitante")
-                            # Enviar uma resposta para o peer solicitante
                             response_message = {
                                 'type': 'response',
                                 'file_name': file_name,
-                                'peer_ip': config[node_id]['ip'],  # IP deste peer que tem o arquivo
-                                'tcp_port': config[node_id]['udp_port'],  # Porta TCP deste peer que tem o arquivo
-                                'file_found': True
+                                'peer_ip': config[node_id]['ip'],
+                                'tcp_port': config[node_id]['udp_port'],
+                                'total_chunks': all_total_chunks[file_name]
                             }
-                            udp_socket.sendto(json.dumps(response_message).encode(), addr)  # Envia a resposta ao peer solicitante
+                            udp_socket.sendto(json.dumps(response_message).encode(), addr)
+                            forward_message(node_id, topology, udp_socket, config, message)
 
                         elif message['ttl'] > 0:
                             print(f"Peer {node_id} processando busca de arquivo '{file_name}' com TTL {message['ttl']}")
-                            # Reduz o TTL e reenvia a mensagem para os vizinhos
                             forward_message(node_id, topology, udp_socket, config, message)
 
                     elif message['type'] == 'response':
-                        # Tratando a resposta quando o arquivo foi encontrado
                         print(f"Peer {node_id} recebeu resposta: O peer {message['peer_ip']} tem o arquivo '{message['file_name']}'")
-                        
-                        # Agora este peer vai solicitar o chunk via TCP
-                        request_chunk(
-                            peer_ip=message['peer_ip'],
-                            peer_port=message['tcp_port'],
-                            chunk_name=message['file_name'],
-                            file_name=message['file_name'],
-                            # AJUSTAR ESSES VALORES
-                            chunk_id=0,  # Para simplificar, vamos usar 0 como ID de chunk
-                            total_chunks=1  # Vamos considerar 1 chunk para simplificação
-                        )
-
+                        total_chunks = message['total_chunks']
+                        for chunk_id in range(total_chunks):
+                            request_chunk(
+                                peer_ip=message['peer_ip'],
+                                peer_port=message['tcp_port'],
+                                chunk_name=f"{message['file_name']}.ch{chunk_id}",
+                                file_name=message['file_name'],
+                                chunk_id=chunk_id,
+                                total_chunks=total_chunks
+                            )
                 except Exception as e:
                     print(f"Erro no peer {node_id} ao receber UDP: {e}")
 
         def forward_message(node_id, topology, udp_socket, config, message):
-            """
-            Reenvia a mensagem para os vizinhos com TTL decrementado.
-            """
-            if message['file_found']:
+            if message.get('file_found', False):
                 print(f"Arquivo '{message['file_name']}' já foi encontrado. Não propagar mais.")
                 return
 
-            message['ttl'] -= 1  # Decrementa o TTL
+            message['ttl'] -= 1
             if message['ttl'] <= 0:
-                return  # Não reenvia se o TTL for 0 ou negativo
+                return
 
-            # Envia para cada vizinho após 1 segundo de atraso
             time.sleep(1)
             for neighbor in topology[node_id]:
                 neighbor_ip = config[neighbor]['ip']
                 neighbor_port = config[neighbor]['udp_port']
                 udp_socket.sendto(json.dumps(message).encode(), (neighbor_ip, neighbor_port))
                 print(f"Peer {node_id} enviou mensagem para Peer {neighbor}")
+
 
         def handle_tcp_connections():
             while True:
@@ -105,17 +113,16 @@ class Peer_Node:
                     print(f"Peer {node_id} recebeu pedido para o chunk: {requested_chunk}")
                     
                     # Enviar o chunk solicitado
-                    send_chunk(conn, node_id, requested_chunk, capacity)
+                    send_chunk(conn, node_id, requested_chunk)
                 else:
                     print(f"Erro: Nome do chunk recebido está vazio")
 
-        def send_chunk(conn, node_id, chunk_name, capacity):
+        def send_chunk(conn, node_id, chunk_name):
             """
-            Envia um chunk de arquivo respeitando a capacidade do nodo.
+            Envia um chunk de arquivo.
             :param conn: Conexão TCP.
             :param node_id: ID do peer.
             :param chunk_name: Nome do chunk a ser enviado.
-            :param capacity: Capacidade do peer em bytes por segundo.
             """
             chunk_path = f"{node_id}/{chunk_name}"  # Diretório com o ID do peer
 
@@ -123,38 +130,57 @@ class Peer_Node:
                 conn.send(b'CHUNK_NOT_FOUND')
                 conn.close()
                 return
-            
+
             print(f"Peer {node_id} começou a enviar o chunk {chunk_name} para o peer solicitante.")
-            # Enviando o arquivo em pedaços respeitando a capacidade de envio (bytes/s)
+
+            total_size = os.path.getsize(chunk_path)  # Calcula o tamanho total do arquivo
+            conn.send(f"{total_size}".encode()) # Envia o tamanho total do arquivo
+
             with open(chunk_path, 'rb') as f:
                 while True:
-                    data = f.read(capacity)  # Lê o número máximo de bytes permitido por segundo
+                    data = f.read(1024)
                     if not data:
-                        break  # Arquivo completamente enviado
-
-                    conn.send(data)  # Envia os dados
-                    time.sleep(1)  # Respeita a taxa de envio (espera 1 segundo antes do próximo envio)
+                        break
+                    conn.send(data)
+                    # verificar esse sleep aqui ta muito lento
+                    # time.sleep(1)
 
             print(f"Peer {node_id} terminou de enviar o chunk {chunk_name}")
             conn.close()
 
-        def receive_chunk(conn, file_name, chunk_id, total_chunks):
+        def receive_chunk(conn, node_id, file_name, chunk_id, total_chunks):
             """
-            Função para receber um chunk via TCP e salvar no diretório do peer.
+            Recebe um chunk de arquivo via TCP e salva no diretório do peer.
             :param conn: Conexão TCP.
+            :param node_id: ID do peer.
             :param file_name: Nome do arquivo que está sendo transferido.
-            :param chunk_id: O ID do chunk recebido.
+            :param chunk_id: ID do chunk recebido.
             :param total_chunks: Total de chunks esperados para este arquivo.
             """
-            chunk_path = f"received_chunks/{file_name}.ch{chunk_id}"  # Caminho para salvar o chunk
+            directory = f"{node_id}/received_chunks"
+            os.makedirs(directory, exist_ok=True)  # Cria o diretório, se necessário
+            chunk_path = f"{directory}/{file_name}.ch{chunk_id}"
+
+            # Recebe o tamanho total do chunk do remetente
+            total_size = int(conn.recv(1024).decode())
+            total_received = 0  # Rastreia o número total de bytes recebidos
+
+            print(f"Peer {node_id} começou a receber o chunk {chunk_id + 1}/{total_chunks} do arquivo '{file_name}'.")
+
             with open(chunk_path, 'wb') as f:
-                while True:
-                    data = conn.recv(1024)  # Receber o chunk em pedaços
+                while total_received < total_size:  # Continua até receber o tamanho total
+                    data = conn.recv(1024)
                     if not data:
                         break
                     f.write(data)
-            
-            print(f"Chunk {chunk_id + 1}/{total_chunks} do arquivo {file_name} recebido e salvo.")
+                    total_received += len(data)
+
+                    # Calcula e exibe o progresso do chunk atual
+                    progress = (total_received / total_size) * 100
+                    print(f"Progresso: {progress:.2f}% ({total_received}/{total_size} bytes) recebidos")
+
+            print(f"Peer {node_id} terminou de receber o chunk {chunk_id + 1}/{total_chunks} do arquivo '{file_name}' e o salvou em '{chunk_path}'.")
+            conn.close()
 
         def concatenate_chunks(file_name, total_chunks):
             """
@@ -162,15 +188,17 @@ class Peer_Node:
             :param file_name: Nome do arquivo que está sendo montado.
             :param total_chunks: Total de chunks que foram recebidos.
             """
-            final_path = f"{node_id}/received_files/{file_name}"  # Onde o arquivo final será salvo
+            final_directory = f"{node_id}/received_files"
+            os.makedirs(final_directory, exist_ok=True)  # Cria o diretório final, se necessário
+            final_path = f"{final_directory}/{file_name}"
+
             with open(final_path, 'wb') as final_file:
                 for chunk_id in range(total_chunks):
                     chunk_path = f"received_chunks/{file_name}.ch{chunk_id}"
                     with open(chunk_path, 'rb') as chunk_file:
-                        final_file.write(chunk_file.read())  # Adiciona o conteúdo do chunk ao arquivo final
-            
-            print(f"Arquivo {file_name} montado com sucesso a partir dos {total_chunks} chunks.")
+                        final_file.write(chunk_file.read())
 
+            print(f"Arquivo {file_name} montado com sucesso a partir dos {total_chunks} chunks.")
         
         def print_transfer_progress(current_chunk, total_chunks):
             """
@@ -180,7 +208,6 @@ class Peer_Node:
             """
             progress = (current_chunk / total_chunks) * 100
             print(f"Progresso da transferência: {current_chunk}/{total_chunks} chunks recebidos ({progress:.2f}%)")
-
 
         def request_chunk(peer_ip, peer_port, chunk_name, file_name, chunk_id, total_chunks):
             """
@@ -193,41 +220,29 @@ class Peer_Node:
             :param total_chunks: Total de chunks esperados.
             """
             try:
-                # Estabelece a conexão TCP com o peer que tem o chunk
                 tcp_conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 tcp_conn.connect((peer_ip, peer_port))
                 print(f"Conexão TCP estabelecida com o peer {peer_ip}:{peer_port}")
-                
+
                 # Solicita o chunk enviando seu nome
-                tcp_conn.sendall(chunk_name.encode())  # Envia o nome do chunk que está sendo solicitado
-                print(f"Solicitando chunk {chunk_name} do arquivo {file_name}")
-                
-                # Agora, receber o chunk e salvar
-                receive_chunk(tcp_conn, file_name, chunk_id, total_chunks)
-                
+                tcp_conn.sendall(chunk_name.encode())
+                print(f"Solicitando chunk {chunk_name}")
+
+                # Receber e salvar o chunk
+                receive_chunk(tcp_conn, node_id, file_name, chunk_id, total_chunks)                
                 tcp_conn.close()
+
+                # Atualiza o progresso
+                nonlocal received_chunks
+                received_chunks += 1
+                print_transfer_progress(received_chunks, total_chunks)
+
+                # Verifica se todos os chunks foram recebidos para montar o arquivo final
+                if received_chunks == total_chunks:
+                    concatenate_chunks(file_name, total_chunks)
+
             except Exception as e:
                 print(f"Erro ao solicitar o chunk {chunk_name}: {e}")
-
-        def receive_chunk(conn, file_name, chunk_id, total_chunks):
-            """
-            Função para receber um chunk via TCP e salvar no diretório do peer.
-            :param conn: Conexão TCP.
-            :param file_name: Nome do arquivo que está sendo transferido.
-            :param chunk_id: O ID do chunk recebido.
-            :param total_chunks: Total de chunks esperados para este arquivo.
-            """
-            chunk_path = f"received_chunks/{file_name}.ch{chunk_id}"  # Caminho para salvar o chunk
-            with open(chunk_path, 'wb') as f:
-                while True:
-                    data = conn.recv(1024)  # Receber o chunk em pedaços
-                    if not data:
-                        break
-                    f.write(data)
-            
-            print(f"Chunk {chunk_id + 1}/{total_chunks} do arquivo {file_name} recebido e salvo.")
-
-
 
         # Iniciando a thread para receber mensagens de busca
         threading.Thread(target=receive_flooding).start()
@@ -236,13 +251,12 @@ class Peer_Node:
         threading.Thread(target=handle_tcp_connections).start()
 
         # Simulação da busca de arquivo iniciada por este nodo
-        # Apenas para teste, o peer 0 inicia a busca de um arquivo
+        # Apenas para teste, o peer 1 inicia a busca de um arquivo
         if node_id == 1:
             message = {
                 'type': 'search',
                 'file_name': 'file.txt',
                 'ttl': 4,
                 'tcp_port': tcp_port,
-                'file_found': False
             }
             forward_message(node_id, topology, udp_socket, config, message)
