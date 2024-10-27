@@ -45,8 +45,6 @@ def main():
     # Esperando que todos os processos terminem
     for p in processes:
         p.join()
-        
-    print("Todos os processos foram finalizados.")
 
 if __name__ == "__main__":
     main()

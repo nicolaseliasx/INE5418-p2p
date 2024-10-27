@@ -1,7 +1,6 @@
-# Parser for the configuration files
 class Config_Parser:
 
-    # Parser for the topologia.txt file
+    # Faz a leitura de topologia.txt
     @staticmethod
     def read_topology(file_path):
         topology = {}
@@ -22,7 +21,7 @@ class Config_Parser:
         return topology
 
 
-    # Parser for the config.txt file
+    # Faz a leitura de config.txt
     @staticmethod
     def read_config(file_path):
         config = {}
@@ -46,7 +45,7 @@ class Config_Parser:
         return config
     
 
-    # Parser for the <metadata>.p2p file
+    # Faz a leitura de <metadata>.p2p 
     @staticmethod
     def read_metadata(file_path):
         try:
@@ -73,9 +72,4 @@ class Config_Parser:
             return metadata
 
         except (IndexError, ValueError) as e:
-            print(f"Erro ao interpretar o arquivo de metadados: {e}")
-            return {}
-
-
-
-
+                raise RuntimeError(f"Erro ao interpretar o arquivo de metadados: {e}.")
