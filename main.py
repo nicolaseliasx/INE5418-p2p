@@ -1,9 +1,8 @@
 
 import multiprocessing
-import os
-from config_parser import Config_Parser
-from peer_node import Peer_Node
-from make_chunks import prepare_peer_files, delete_all_chunks
+import sys
+from src.config_parser import Config_Parser
+from src.peer_node import Peer_Node
 
 def main():
     print("""
@@ -31,22 +30,15 @@ def main():
             ppppppppp                               ppppppppp           
         """)
     
-    topology = Config_Parser.read_topology('configs/topologia.txt')
-    config = Config_Parser.read_config('configs/config.txt')
-    
-    # Prepara os arquivos para cada peer
-
-    
-    peer_dirs = {node_id: str(node_id) for node_id in config}  # Usa os diretórios diretamente (0/, 1/, 2/, etc.)
-    delete_all_chunks(peer_dirs) # Limpa os chunks existentes
-    total_chunks = prepare_peer_files(peer_dirs)  # Divide arquivos em chunks para cada peer
-    print(f"Total de chunks para cada arquivo: {total_chunks}")
+    topology = Config_Parser.read_topology('topologia.txt')
+    config = Config_Parser.read_config('config.txt')
+    metadata = Config_Parser.read_metadata(sys.argv[1])
 
     # Criando N processos para cada peer
     processes = []
     for node_id in config:
         # Criando um processo para cada nodo
-        p = multiprocessing.Process(target=Peer_Node.peer_node, args=(node_id, config, topology, total_chunks))
+        p = multiprocessing.Process(target=Peer_Node.peer_node, args=(node_id, config, topology, metadata))
         processes.append(p)
         p.start()
     
